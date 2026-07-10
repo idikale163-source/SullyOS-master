@@ -689,6 +689,19 @@ const ChatInputArea: React.FC<ChatInputAreaProps> = ({
                               <span className="text-xs font-bold">{luckinActivated ? '结束瑞一杯' : '瑞一杯'}</span>
                             </button>
 
+                            {/* 自定义 MCP 抽屉入口 */}
+                            <button
+                              onClick={() => onPanelAction('custom-mcp-drawer')}
+                              className={`flex flex-col items-center gap-2 active:scale-95 transition-transform ${acnh ? 'text-[#725d42]' : isDiscordStyle ? 'text-slate-200' : 'text-slate-600'}`}
+                            >
+                              <div className={`w-14 h-14 rounded-2xl flex items-center justify-center shadow-sm border relative ${
+                                  isDiscordStyle ? 'bg-slate-800 text-emerald-400 border-emerald-400/20' : 'bg-emerald-50 text-emerald-600 border-emerald-100'
+                              }`}>
+                                  <span className="text-xl">🔌</span>
+                              </div>
+                              <span className="text-xs font-bold">工具箱</span>
+                            </button>
+
                             {/* HTML 模块模式：tap = 切换开关 (注入提示词); 长按打开自定义提示词设置 */}
                             <button
                               onClick={() => onPanelAction('html-mode-toggle')}

@@ -9,9 +9,9 @@ import { EXPORT_CHUNK_SIZE, sliceRanges } from '../utils/backupExport';
 import Modal from '../components/os/Modal';
 import { NotionManager, FeishuManager, RealtimeContextManager, fetchOwmWeather, fetchOpenMeteoWeather } from '../utils/realtimeContext';
 import { XhsMcpClient } from '../utils/xhsMcpClient';
+import { getCustomMcpServers, saveCustomMcpServers, testCustomMcpConnection, resetCustomMcpSession, CustomMcpServerConfig } from '../utils/customMcpClient';
 import { getMcdToken, setMcdToken as saveMcdToken, isMcdEnabled, setMcdEnabled as saveMcdEnabled, testMcdConnection, resetMcdSession } from '../utils/mcdMcpClient';
 import { getLuckinToken, setLuckinToken as saveLuckinToken, isLuckinEnabled, setLuckinEnabled as saveLuckinEnabled, testLuckinConnection, resetLuckinSession } from '../utils/luckinMcpClient';
-import { getCustomMcpUrl, setCustomMcpUrl as saveCustomMcpUrl, isCustomMcpEnabled, setCustomMcpEnabled as saveCustomMcpEnabled, testCustomMcpConnection, resetCustomMcpSession } from '../utils/customMcpClient';
 import { getProxyWorkerUrl, setProxyWorkerUrl, DEFAULT_PROXY_WORKER } from '../utils/proxyWorker';
 import { VOICE_ACTING_GUIDE } from '../utils/minimaxTts';
 import { FISH_VOICE_ACTING_GUIDE } from '../utils/fishAudioTts';
@@ -200,11 +200,10 @@ const Settings: React.FC = () => {
   const [luckinTestStatus, setLuckinTestStatus] = useState('');
   const [luckinTesting, setLuckinTesting] = useState(false);
 
-  // 自定义 MCP
-  const [customMcpUrl, setCustomMcpUrlState] = useState(() => getCustomMcpUrl());
-  const [customMcpEnabled, setCustomMcpEnabledState] = useState(() => isCustomMcpEnabled());
-  const [customMcpTestStatus, setCustomMcpTestStatus] = useState('');
-  const [customMcpTesting, setCustomMcpTesting] = useState(false);
+  // 自定义 MCP (多实例)
+  const [customServers, setCustomServers] = useState<CustomMcpServerConfig[]>(() => getCustomMcpServers());
+  const [customTestStatus, setCustomTestStatus] = useState<Record<string, string>>({});
+  const [customTesting, setCustomTesting] = useState<Record<string, boolean>>({});
 
   // Proactive Push 加速器（Worker URL / VAPID 公钥写死在 proactivePushConfig.ts 常量里）
   const initialPushCfg = loadPushConfig();
@@ -970,9 +969,7 @@ const Settings: React.FC = () => {
           if (r.ok) {
               const names = (r.tools || []).map(t => t.name).slice(0, 6).join(', ');
               setLuckinTestStatus(`✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}`);
-          } else {
-              setLuckinTestStatus(`❌ ${r.message}`);
-          }
+          } else setLuckinTestStatus(`❌ ${r.message}`);
       } catch (e: any) {
           setLuckinTestStatus(`❌ ${e?.message || String(e)}`);
       } finally {
@@ -980,34 +977,56 @@ const Settings: React.FC = () => {
       }
   };
 
-  // 自定义 MCP
-  const handleCustomMcpUrlChange = (v: string) => {
-      setCustomMcpUrlState(v);
-      saveCustomMcpUrl(v);
-      resetCustomMcpSession();
-      setCustomMcpTestStatus('');
+  const handleCustomServerChange = (id: string, updates: Partial<CustomMcpServerConfig>) => {
+      setCustomServers(prev => {
+          const next = prev.map(s => s.id === id ? { ...s, ...updates } : s);
+          saveCustomMcpServers(next);
+          return next;
+      });
   };
-  const handleCustomMcpEnabledChange = (v: boolean) => {
-      setCustomMcpEnabledState(v);
-      saveCustomMcpEnabled(v);
-      if (!v) resetCustomMcpSession();
+
+  const addCustomServer = () => {
+      setCustomServers(prev => {
+          const next = [...prev, {
+              id: 'mcp_' + Date.now().toString(),
+              name: '新 MCP 服务',
+              url: '',
+              enabled: false,
+              keywords: '',
+              hiddenPrompt: ''
+          }];
+          saveCustomMcpServers(next);
+          return next;
+      });
   };
-  const testCustomMcpApi = async () => {
-      if (!customMcpUrl.trim()) { setCustomMcpTestStatus('请先填写 MCP 服务地址'); return; }
-      setCustomMcpTesting(true);
-      setCustomMcpTestStatus('正在连接自定义 MCP...');
+
+  const deleteCustomServer = (id: string) => {
+      setCustomServers(prev => {
+          const next = prev.filter(s => s.id !== id);
+          saveCustomMcpServers(next);
+          return next;
+      });
+  };
+
+  const testCustomApi = async (id: string, url: string) => {
+      if (!url.trim()) { 
+          setCustomTestStatus(p => ({ ...p, [id]: '请先填写 MCP 服务地址' }));
+          return; 
+      }
+      setCustomTesting(p => ({ ...p, [id]: true }));
+      setCustomTestStatus(p => ({ ...p, [id]: '正在连接自定义 MCP...' }));
       try {
-          const r = await testCustomMcpConnection();
+          const r = await testCustomMcpConnection(id);
           if (r.ok) {
-              const names = (r.tools || []).map(t => t.name).slice(0, 6).join(', ');
-              setCustomMcpTestStatus(`✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}`);
+              const names = (r.tools || []).map(t => t.originalName || t.name).slice(0, 6).join(', ');
+              setCustomTestStatus(p => ({ ...p, [id]: `✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}` }));
           } else {
-              setCustomMcpTestStatus(`❌ ${r.message}`);
+              setCustomTestStatus(p => ({ ...p, [id]: `❌ ${r.message}` }));
           }
       } catch (e: any) {
-          setCustomMcpTestStatus(`❌ ${e?.message || String(e)}`);
+          setCustomTestStatus(p => ({ ...p, [id]: `❌ ${e?.message || String(e)}` }));
       } finally {
-          setCustomMcpTesting(false);
+          setCustomTesting(p => ({ ...p, [id]: false }));
       }
   };
 
@@ -1740,46 +1759,6 @@ const Settings: React.FC = () => {
                     小红书
                 </div>
             </div>
-        <div className="bg-gradient-to-br from-indigo-50 to-purple-50 p-4 rounded-2xl border border-indigo-100 shadow-sm mt-3">
-                      <div className="flex items-center justify-between mb-3">
-                          <div className="flex items-center gap-2">
-                              <span className="text-sm font-bold text-slate-800">自定义 MCP 连接</span>
-                              <span className="text-[9px] bg-indigo-100 text-indigo-700 px-1.5 py-0.5 rounded-full">通用协议</span>
-                          </div>
-                          <label className="relative inline-flex items-center cursor-pointer">
-                              <input type="checkbox" checked={customMcpEnabled} onChange={e => handleCustomMcpEnabledChange(e.target.checked)} className="sr-only peer" />
-                              <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-500"></div>
-                          </label>
-                      </div>
-                      
-                      {customMcpEnabled && (
-                          <div className="space-y-2">
-                              <div>
-                                  <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">MCP SSE 接口地址</label>
-                                  <input 
-                                      type="text" 
-                                      value={customMcpUrl} 
-                                      onChange={e => handleCustomMcpUrlChange(e.target.value)} 
-                                      className="w-full bg-white/80 border border-indigo-200 rounded-xl px-3 py-2 text-sm font-mono" 
-                                      placeholder="例如: http://127.0.0.1:5000/sse" 
-                                  />
-                              </div>
-                              <button 
-                                  onClick={testCustomMcpApi} 
-                                  disabled={customMcpTesting} 
-                                  className="w-full py-2 bg-indigo-100 text-indigo-700 text-xs font-bold rounded-xl active:scale-95 transition-transform disabled:opacity-60"
-                              >
-                                  {customMcpTesting ? '连接中...' : '测试连接并拉取工具清单'}
-                              </button>
-                              {customMcpTestStatus && (
-                                  <div className="text-[10px] p-2 bg-white/60 rounded-lg text-slate-600 font-mono whitespace-pre-wrap break-all mt-2">
-                                      {customMcpTestStatus}
-                                  </div>
-                              )}
-                          </div>
-                      )}
-                  </div>
-
         </section>
 
         {/* ───────── 推送凭据 (VAPID) ───────── */}
@@ -2824,11 +2803,89 @@ const Settings: React.FC = () => {
                               4. 仅中国大陆 (不含港澳台)
                           </p>
                       </div>
-                  )}
-              </div>
+                    )}
+                </div>
 
-              {/* 瑞幸 MCP */}
-              <div className="bg-blue-50/60 p-4 rounded-2xl space-y-3">
+                {/* 自定义 MCP */}
+                <div className="bg-emerald-50/60 p-4 rounded-2xl space-y-3">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <span className="text-xl">🔌</span>
+                            <span className="text-sm font-bold text-emerald-700">自定义 MCP 服务</span>
+                            <span className="text-[9px] bg-emerald-100 text-emerald-600 px-1.5 py-0.5 rounded-full">MCP over SSE</span>
+                        </div>
+                        <button onClick={addCustomServer} className="px-3 py-1 bg-emerald-500 text-white text-xs font-bold rounded-lg active:scale-95 transition-transform">
+                            + 新增
+                        </button>
+                    </div>
+                    {customServers.length === 0 ? (
+                        <div className="text-center py-4 text-xs text-emerald-600/70">没有配置自定义 MCP</div>
+                    ) : (
+                        <div className="space-y-4">
+                            {customServers.map(server => (
+                                <div key={server.id} className="bg-white/80 p-3 rounded-xl border border-emerald-200/50 space-y-3 relative">
+                                    <div className="flex items-center justify-between">
+                                        <input 
+                                            value={server.name} 
+                                            onChange={e => handleCustomServerChange(server.id, { name: e.target.value })}
+                                            className="font-bold text-sm bg-transparent border-b border-dashed border-emerald-300 focus:border-emerald-500 focus:outline-none w-32"
+                                            placeholder="服务名称"
+                                        />
+                                        <div className="flex items-center gap-3">
+                                            <label className="relative inline-flex items-center cursor-pointer">
+                                                <input type="checkbox" checked={server.enabled} onChange={e => handleCustomServerChange(server.id, { enabled: e.target.checked })} className="sr-only peer" />
+                                                <div className="w-9 h-5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-emerald-500" />
+                                            </label>
+                                            <button onClick={() => deleteCustomServer(server.id)} className="text-red-400 hover:text-red-600 p-1">
+                                                ✕
+                                            </button>
+                                        </div>
+                                    </div>
+                                    <div>
+                                        <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">SSE 服务地址 (URL)</label>
+                                        <input 
+                                            value={server.url} 
+                                            onChange={e => handleCustomServerChange(server.id, { url: e.target.value })} 
+                                            className="w-full bg-white border border-emerald-100 rounded-lg px-2.5 py-1.5 text-xs" 
+                                            placeholder="http://localhost:3000/sse" 
+                                        />
+                                    </div>
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">自动激活关键词 (逗号分隔)</label>
+                                            <input 
+                                                value={server.keywords || ''} 
+                                                onChange={e => handleCustomServerChange(server.id, { keywords: e.target.value })} 
+                                                className="w-full bg-white border border-emerald-100 rounded-lg px-2.5 py-1.5 text-xs" 
+                                                placeholder="查天气,翻译" 
+                                            />
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">隐式注入提示词</label>
+                                            <input 
+                                                value={server.hiddenPrompt || ''} 
+                                                onChange={e => handleCustomServerChange(server.id, { hiddenPrompt: e.target.value })} 
+                                                className="w-full bg-white border border-emerald-100 rounded-lg px-2.5 py-1.5 text-xs" 
+                                                placeholder="如果用户问..." 
+                                            />
+                                        </div>
+                                    </div>
+                                    <button onClick={() => testCustomApi(server.id, server.url)} disabled={customTesting[server.id]} className="w-full py-1.5 bg-emerald-100 text-emerald-700 text-xs font-bold rounded-lg active:scale-95 transition-transform disabled:opacity-60">
+                                        {customTesting[server.id] ? '测试中…' : '测试连接'}
+                                    </button>
+                                    {customTestStatus[server.id] && (
+                                        <div className={`p-2 rounded-lg text-[10px] whitespace-pre-line leading-relaxed ${customTestStatus[server.id].startsWith('✅') ? 'bg-emerald-50 text-emerald-700' : 'bg-red-50 text-red-600'}`}>
+                                            {customTestStatus[server.id]}
+                                        </div>
+                                    )}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* 瑞幸 MCP */}
+                <div className="bg-blue-50/60 p-4 rounded-2xl space-y-3">
                   <div className="flex items-center justify-between">
                       <div className="flex items-center gap-2">
                           <Coffee size={20} weight="fill" className="text-blue-600" />

@@ -74,7 +74,6 @@ export interface BuildChatPayloadInput {
     luckinMiniSnap?: LuckinMiniAppSnapshot;
     /** 瑞幸聊天点单模式 (点"瑞一杯"激活, 角色直接调真实工具) */
     luckinChat?: LuckinChatState;
-    customMcpActive?: boolean;
 }
 
 export interface BuildChatPayloadResult {
@@ -90,7 +89,6 @@ export interface BuildChatPayloadResult {
         mcdActive: boolean;
         luckinActive: boolean;
         luckinChatActive: boolean;
-        customMcpActive: boolean;
         htmlActive: boolean;
         thinkingActive: boolean;
         promptBuildSkipped: boolean;
@@ -173,7 +171,7 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
     const {
         char, userProfile, groups, emojis, categories, historyMsgs, contextLimit,
         realtimeConfig, innerState,
-        translationConfig, htmlMode, thinkingChain, mcdMiniSnap, luckinMiniSnap, luckinChat, customMcpActive
+        translationConfig, htmlMode, thinkingChain, mcdMiniSnap, luckinMiniSnap, luckinChat,
     } = input;
     const recentMsgsHint = input.recentMsgsHint ?? historyMsgs;
 
@@ -190,7 +188,6 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
                 mcdActive: false,
                 luckinActive: false,
                 luckinChatActive: false,
-                customMcpActive: false,
                 htmlActive: false,
                 thinkingActive: false,
                 promptBuildSkipped: true,
@@ -323,12 +320,10 @@ export async function buildChatRequestPayload(input: BuildChatPayloadInput): Pro
         });
     }
 
-    const customMcpActiveBool = !!customMcpActive;
-
     return {
         systemPrompt,
         cleanedApiMessages: messagesWithWorldbookDepth,
         fullMessages,
-        flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, customMcpActive: customMcpActiveBool, htmlActive, thinkingActive, promptBuildSkipped: false },
+        flags: { bilingualActive, mcdActive, luckinActive, luckinChatActive, htmlActive, thinkingActive, promptBuildSkipped: false },
     };
 }

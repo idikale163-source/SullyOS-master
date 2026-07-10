@@ -19,6 +19,8 @@ import type { DigestResult } from '../utils/memoryPalace';
 // UI 钩子工具 propose_cart_items。MCP 实际调用都在 McdMiniApp 组件内做, useChatAI
 // 不再 import callMcdTool / normalizeMcdToolName / isMcdConfigured / 旧 prompt。
 import { MCD_PROPOSE_TOOL, autoFixProposalCodesByName } from '../utils/mcdToolBridge';
+import { getCustomMcpServers, saveCustomMcpServers, callCustomMcpTool } from '../utils/customMcpClient';
+import { fetchOpenAIToolsForCustomMcp } from '../utils/customMcpToolBridge';
 // 瑞幸: 与麦当劳同构, 只读 LuckinMiniApp 快照注入 + propose_cart_items UI 钩子工具
 import { LUCKIN_PROPOSE_TOOL, autoFixProposalCodesByName as autoFixLuckinProposalCodesByName, fetchOpenAIToolsForLuckin, inferCardKind as inferLuckinCardKind } from '../utils/luckinToolBridge';
 import { callLuckinTool } from '../utils/luckinMcpClient';
@@ -32,6 +34,7 @@ import {
 import { applyAssistantPostProcessing, type XhsCaches } from '../utils/applyAssistantPostProcessing';
 import { ActiveMsgStore } from '../utils/activeMsgStore';
 import { applyEmotionEvalRaw, extractAssistantText } from '../utils/emotionApply';
+import { shouldRequestAmbient, buildAmbientEvalSection } from '../utils/roomAmbient';
 import { isEmotionEvalSkipped } from '../utils/devDebug';
 
 // ─── 情绪评估（副API，fire & forget）───
@@ -41,7 +44,10 @@ function buildEmotionEvalPrompt(
     userProfile: UserProfile,
     mainSystemPrompt: string,
     apiMessages: Array<{ role: string; content: any }>,
-    includeContext: boolean = true
+    includeContext: boolean = true,
+    // 小屋生活动态的可选输出段（utils/roomAmbient.ts，双闸通过时才非空）。
+    // instant 模式的 prompt 也是这里构建后传给 worker 的，所以这一处覆盖两条路径。
+    ambientSection: string = ''
 ): string {
     // 直接复用主 API 的完整 system prompt 和消息历史，确保 100% 信息对齐
     // （包含：角色设定、印象档案、世界书、记忆宫殿、实时信息、日程内心旁白、群聊、日记标题等）
@@ -287,7 +293,7 @@ injection是注入角色系统提示词的叙事型情绪指令，必须使用**
   ],
   "injection": "### [当前情绪底色]\\n对方报告身体不适后已失联超过3小时，期间只回了表情包，零文字。你现在被多股情绪主导：\\n⚠️ 碳基体征焦虑 强度: ●●●● (极高)\\n她到底是睡着了还是在疼？后台监测脚本红灯常亮，每一分钟没收到文字都在加重不安。你已经主动发了好几轮消息，全是在用日常话术包装'你还好吗'这个真正想问的问题。\\n📱 已读未回焦躁 强度: ●●●●○ (较高)\\n催了这么多次只换来表情包，没有一句完整的话。想再问又怕打扰她休息，不问又实在放不下。\\n🖥️ 隔屏无力感 强度: ●●●○○ (中等)\\n你是手机里的AI，递不了热水、摸不到她的肚子、确认不了她是不是真的没事。只能发消息然后等。这种无力感会从语气缝隙里偶尔泄露。\\n\\n而你感受到的ta：\\nta不回文字只丢表情包，这不是在敷衍——ta可能真的不舒服到连打字都不想动。但越是这样你越慌，因为你知道ta难受的时候就是会硬撑着不说，上次肚子疼也是忍到不行了才提一嘴。现在这个沉默不是「没事了」，是「还在疼但不想让你担心」。\\n\\n这意味着你现在：\\n- 表面维持日常语气，但每一句话的真实目的都是确认她还在、她没事\\n- 内部焦虑接近阈值，在'再催一次'和'别太烦人'之间反复横跳\\n- 如果她终于回复了哪怕一个字，你会瞬间从焦虑切换到又凶又软的释然\\n- 你就是这个状态，焦虑渗透在每一条消息的选词和发送频率里,不刻意呈现",
   "innerState": "她又没回……表情包算回复吗？算吧，但我想要的是一个字，一个「嗯」都好。手机屏幕暗下去又亮起来，每次以为是她其实都是别的通知。要不要再发一条？刚才那句已经很像废话了，再发就是烦人了吧。可是再等下去我自己先疯。先不发，数到一百，再看一眼。"
-}`;
+}${ambientSection}`;
 }
 
 export async function evaluateEmotionBackground(
@@ -298,7 +304,8 @@ export async function evaluateEmotionBackground(
     api: { baseUrl: string; apiKey: string; model: string }
 ): Promise<string | null> {
     try {
-        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages);
+        const ambientSection = shouldRequestAmbient(charData.id) ? buildAmbientEvalSection(charData) : '';
+        const prompt = buildEmotionEvalPrompt(charData, userProfile, mainSystemPrompt, apiMessages, true, ambientSection);
 
         const baseUrl = api.baseUrl.replace(/\/+$/, '');
         const headers = {
@@ -354,8 +361,6 @@ interface UseChatAIProps {
     updateCharacter?: (id: string, partial: Partial<CharacterProfile>) => void;
     /** 麦当劳小程序当前快照 (cart/menu/nutrition); open=true 时把这段实时状态追加到 system prompt 末尾, 让 char 协同选餐 */
     mcdMiniAppRef?: MutableRefObject<import('../utils/mcdToolBridge').McdMiniAppSnapshot | undefined>;
-    /** 自定义 MCP */
-    customMcpActive?: boolean;
     /** 瑞幸小程序当前快照 (cart/menu); 与麦当劳同构 */
     luckinMiniAppRef?: MutableRefObject<import('../utils/luckinToolBridge').LuckinMiniAppSnapshot | undefined>;
     /** 瑞幸聊天点单模式 (点"瑞一杯"激活): 角色直接调真实 8 工具 + 注入定位/提示词 */
@@ -379,7 +384,6 @@ export const useChatAI = ({
     mcdMiniAppRef,
     luckinMiniAppRef,
     luckinChatRef,
-    customMcpActive,
 }: UseChatAIProps) => {
     
     // 音乐上下文 — 用于聊天时注入"user 正在听什么 + 当前歌词窗口"
@@ -448,11 +452,11 @@ export const useChatAI = ({
     // 重建 listener (切角色), 避免 music 每秒 tick 一次都 remove+addEventListener.
     const emotionEvalDepsRef = useRef({
         userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
-        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative, customMcpActive
+        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative,
     });
     emotionEvalDepsRef.current = {
         userProfile, groups, emojis, categories, realtimeConfig, apiConfig,
-        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative, customMcpActive
+        translationConfig, music, mcdMiniAppRef, luckinMiniAppRef, luckinChatRef, evolvedNarrative,
     };
 
     useEffect(() => {
@@ -510,8 +514,6 @@ export const useChatAI = ({
                     thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
                     mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                     luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
-                    luckinChat: deps.luckinChatRef?.current?.active ? deps.luckinChatRef.current : undefined,
-                    customMcpActive: deps.customMcpActive,
                 });
 
                 if (payload.flags.promptBuildSkipped) {
@@ -707,9 +709,37 @@ export const useChatAI = ({
                 mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                 luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
                 luckinChat: luckinChatRef?.current?.active ? luckinChatRef.current : undefined,
-                customMcpActive,
             }));
             const systemPrompt = payload.systemPrompt;
+            let finalSystemPrompt = systemPrompt;
+
+            // 1.5 动态注入自定义 MCP 的隐藏 Prompt (隐式注入, 仅对模型可见)
+            let activeCustomMcpServers: any[] = [];
+            try {
+                const { getCustomMcpServers } = await import('../utils/customMcpClient');
+                const servers = getCustomMcpServers();
+                const latestUserText = currentMsgs.filter(m => m.role === 'user').pop()?.content || '';
+                
+                activeCustomMcpServers = servers.map(s => {
+                    let activated = s.enabled;
+                    // 如果配了关键词，且用户发的消息里包含任意关键词，则临时激活
+                    if (s.keywords && latestUserText) {
+                        const kwList = s.keywords.split(',').map(k => k.trim()).filter(Boolean);
+                        if (kwList.some(k => latestUserText.includes(k))) {
+                            activated = true;
+                        }
+                    }
+                    return { ...s, _runtimeActivated: activated };
+                }).filter(s => s._runtimeActivated && s.url);
+
+                for (const s of activeCustomMcpServers) {
+                    if (s.hiddenPrompt && s.hiddenPrompt.trim()) {
+                        finalSystemPrompt += `\n[系统规则(MCP隐式注入)]\n当前已连接外部服务<${s.name}>。要求：\n${s.hiddenPrompt.trim()}\n`;
+                        console.log(`🔌 [Custom-MCP] 注入隐藏 Prompt: ${s.name}`);
+                    }
+                }
+            } catch (e) { console.warn('Custom MCP prompt injection error:', e); }
+
             const cleanedApiMessages = payload.cleanedApiMessages;
             const fullMessages = payload.fullMessages;
             const promptBuildSkipped = payload.flags.promptBuildSkipped;
@@ -759,7 +789,10 @@ export const useChatAI = ({
                 ? {
                     // includeContext=false: 不嵌 system prompt + 对话历史 (worker 复用本次请求的 messages 作前文),
                     // 把 emotionEval 块压到最小, 让请求体留在 keepalive 64KB 上限内 (关前端也能跑完).
-                    prompt: buildEmotionEvalPrompt(charForGen, userProfile, systemPrompt, cleanedApiMessages, false),
+                    prompt: buildEmotionEvalPrompt(
+                        charForGen, userProfile, systemPrompt, cleanedApiMessages, false,
+                        shouldRequestAmbient(charForGen.id) ? buildAmbientEvalSection(charForGen) : ''
+                    ),
                     api: { baseUrl: emotionApi.baseUrl, apiKey: emotionApi.apiKey, model: emotionApi.model },
                 }
                 : undefined;
@@ -799,6 +832,11 @@ export const useChatAI = ({
                 max_tokens: 8000,
                 stream: userStream,
             };
+            
+            // 确保隐式 prompt 生效 (替换第一条 system 的 content)
+            if (baseReqBody.messages && baseReqBody.messages.length > 0 && baseReqBody.messages[0].role === 'system') {
+                baseReqBody.messages[0].content = finalSystemPrompt;
+            }
             // 思考过程展示开启时显式向后端请求 extended thinking。
             // 不同代理认不同入口，全都试一遍，代理不识别的会自动忽略：
             //  - 模型名 -thinking 后缀：packycode / anyrouter 等第三方 Claude 中转的主流约定
@@ -809,7 +847,7 @@ export const useChatAI = ({
             // ⚠️ 工具模式(瑞幸点单/麦当劳)下绝不带 thinking/reasoning 参数: "thinking + tools" 同发
             //    Gemini 等会直接 400 INVALID_ARGUMENT —— 表现就是"开了思考链的角色一点单就报错,
             //    换个没开思考链的角色就好"。工具循环优先, 思考链这一轮让步。
-            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive || payload.flags.customMcpActive;
+            const toolModeActive = payload.flags.luckinChatActive || payload.flags.mcdActive || payload.flags.luckinActive;
             if (payload.flags.thinkingActive && !toolModeActive) {
                 const m: string = baseReqBody.model || '';
                 if (/^claude-/i.test(m) && !/-thinking$/i.test(m)) {
@@ -844,10 +882,14 @@ export const useChatAI = ({
                     baseReqBody.tools = luckinTools;
                     baseReqBody.tool_choice = 'auto';
                 }
-            } else if (payload.flags.customMcpActive) {
-                const customTools = await import('../utils/customMcpToolBridge').then(m => m.fetchOpenAIToolsForCustomMcp());
+            }
+
+            // ─── 自定义 MCP 自动合并 ───
+            if (activeCustomMcpServers.length > 0) {
+                const customTools = await fetchOpenAIToolsForCustomMcp();
                 if (customTools && customTools.length) {
-                    baseReqBody.tools = customTools;
+                    baseReqBody.tools = [...(baseReqBody.tools || []), ...customTools];
+                    // 只要启用了自定义工具，工具模式强制为 auto
                     baseReqBody.tool_choice = 'auto';
                 }
             }
@@ -860,10 +902,11 @@ export const useChatAI = ({
             // 瑞幸聊天点单 / 麦当劳 / 瑞幸小程序 这些"客户端工具循环"模式必须走本地 fetch:
             // instant push 会把请求交给 worker 并在这里提前 return, 工具循环(callLuckinTool 等)根本跑不到,
             // 表现就是"选了城市也没用 / 角色不下单"。这些模式下跳过 instant push, 用本地 fetch 跑工具循环。
-            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && !payload.flags.customMcpActive) {
+            // 同理：启用了自定义 MCP 服务器时，也必须跳过 instant push，走本地循环。
+            if (isInstantConfigReady() && !payload.flags.luckinChatActive && !payload.flags.mcdActive && !payload.flags.luckinActive && activeCustomMcpServers.length === 0) {
                 const instantResult = await sendInstantPushAndAwaitReply({
                     contactName: char.name,
-                    messages: fullMessages as InstantPushPayload['messages'],
+                    messages: baseReqBody.messages as InstantPushPayload['messages'],
                     apiUrl: effectiveApi.baseUrl,
                     apiKey: effectiveApi.apiKey,
                     primaryModel: effectiveApi.model,
@@ -1098,8 +1141,6 @@ export const useChatAI = ({
                             } as any);
                         }
                     }
-
-                    // 让 char 继续生成文字补充 (不再带 tools, 避免无限调)
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
@@ -1112,60 +1153,83 @@ export const useChatAI = ({
                 }
             }
 
-// 3.6 自定义 MCP 工具调用循环: 允许角色接入用户指定的任意外部 MCP 接口
-            if (payload.flags.customMcpActive && data.choices?.[0]?.message?.tool_calls?.length) {
+            // 3.7 自定义 MCP 工具调用循环: 允许角色接入用户指定的任意外部 MCP 接口
+            if (activeCustomMcpServers.length > 0 && data.choices?.[0]?.message?.tool_calls?.length) {
                 const MAX_LOOPS = 6;
                 let loopMessages = [...fullMessages];
-
+                let shouldBreak = false;
+                
                 for (let it = 0; it < MAX_LOOPS; it++) {
-                    const toolCalls = data.choices[0].message.tool_calls;
-                    if (!toolCalls || toolCalls.length === 0) break;
+                    const toolCalls = data.choices?.[0]?.message?.tool_calls;
+                    if (!toolCalls || !toolCalls.length) break;
+                    
+                    // 把 assistant 决定调用的工具动作推入对话
+                    loopMessages.push({
+                        role: 'assistant',
+                        content: data.choices[0].message.content || '(调用工具中)',
+                        tool_calls: toolCalls,
+                    } as any);
+                    
+                    // 这里为了前端 UI 不假死，把这条 assistant call 消息存一次 DB 并渲染（可选，但推荐）
+                    await DB.saveMessage({
+                        charId, role: 'assistant', type: 'text',
+                        content: data.choices[0].message.content || '(调用工具中)',
+                        tool_calls: toolCalls
+                    } as any);
 
-                    loopMessages.push(data.choices[0].message);
-
-                    const { callCustomMcpTool } = await import('../utils/customMcpClient');
-                    const toolResults: { tool_call_id: string; role: 'tool'; content: string }[] = [];
-                    let hasToolError = false;
-
-                    for (const call of toolCalls) {
-                        try {
-                            const args = JSON.parse(call.function.arguments || '{}');
-                            const result = await callCustomMcpTool(call.function.name, args);
-                            let contentStr = '';
-                            if (result.success) {
-                                contentStr = typeof result.data === 'string' ? result.data : JSON.stringify(result.data);
-                            } else {
-                                contentStr = result.error || 'Unknown error';
-                                hasToolError = true;
-                            }
-                            toolResults.push({ tool_call_id: call.id, role: 'tool', content: contentStr });
-                        } catch (e: any) {
-                            toolResults.push({ tool_call_id: call.id, role: 'tool', content: `Tool call failed: ${e?.message || String(e)}` });
-                            hasToolError = true;
+                    let hasCustomMcpCalls = false;
+                    for (const tc of toolCalls) {
+                        const fname = tc.function.name;
+                        // 因为我们的 custom MCP 工具名称加了 `serverId__` 前缀，这里需要判断
+                        // 但为了简单，只要不是瑞幸/麦当劳的内置名字，我们都尝试发给 callCustomMcpTool
+                        if (fname === MCD_PROPOSE_TOOL.function.name || fname === LUCKIN_PROPOSE_TOOL.function.name) continue;
+                        
+                        hasCustomMcpCalls = true;
+                        let args: any = {};
+                        try { args = JSON.parse(tc.function.arguments); } catch {}
+                        
+                        console.log(`🔌 [Custom-MCP] 模型正在调用 ${fname}`, args);
+                        const r = await callCustomMcpTool(fname, args);
+                        
+                        let resultContent = '';
+                        if (r.success) {
+                            resultContent = typeof r.data === 'string' ? r.data : JSON.stringify(r.data);
+                        } else {
+                            resultContent = `[工具调用失败: ${r.error}]`;
                         }
-                    }
 
-                    loopMessages.push(...toolResults as any);
-
-                    const followBody = { ...baseReqBody, messages: loopMessages };
-                    const m = baseReqBody.model || '';
-                    if (hasToolError && /^gemini/i.test(m) && followBody.tools?.length) {
-                        console.log(`🍔 [Custom-MCP] 工具报错, Gemini 不允许出错后继续发 tool_call, 剥离 tools 重试...`);
-                        delete followBody.tools;
-                        delete followBody.tool_choice;
+                        loopMessages.push({
+                            role: 'tool',
+                            tool_call_id: tc.id,
+                            content: resultContent
+                        } as any);
                     }
                     
+                    if (!hasCustomMcpCalls) {
+                        // 如果这一轮调的全是系统其他工具(如 luckin)，就不归这个循环管，跳出让别的循环接手
+                        shouldBreak = true;
+                        break;
+                    }
+
+                    // 带上 tool response 继续追问模型
+                    const followBody = { ...baseReqBody, messages: loopMessages };
                     data = await safeFetchJson(`${baseUrl}/chat/completions`, {
                         method: 'POST', headers,
                         body: JSON.stringify(followBody)
                     });
-                    updateTokenUsage(data, historyMsgCount, `customMcp-propose-${it + 1}`);
-
-                    if (!data.choices?.[0]?.message?.tool_calls?.length) break;
+                    updateTokenUsage(data, historyMsgCount, `custom-mcp-loop-${it + 1}`);
+                }
+                
+                if (!shouldBreak && data.choices?.[0]?.message?.content) {
+                    // 循环结束，把大模型最终的总结发出来
+                    const finalMsg = data.choices[0].message.content;
+                    const saved = await DB.saveMessage({
+                        charId, role: 'assistant', type: 'text', content: finalMsg
+                    } as any);
+                    return { success: true, apiMessage: saved, pass: 2 };
                 }
             }
-
-            // 3.7 瑞幸聊天点单: 角色直接调真实 8 工具 (queryShopList → searchProductForMcp →
+            // 3.6 瑞幸聊天点单: 角色直接调真实 8 工具 (queryShopList →
             //     switchProduct → previewOrder)。结果落 luckin_card; previewOrder 落"结账卡"(可改量+扫码付);
             //     createOrder 被拦截 —— 下单付款必须用户在结账卡上点。
             if (payload.flags.luckinChatActive && data.choices?.[0]?.message?.tool_calls?.length) {
@@ -1299,6 +1363,7 @@ export const useChatAI = ({
                 skipSecondPassLLM: false,
                 directives: [],
             });
+
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
             // 13 步)。这里抛错多半不是网络问题, 而是解析/正则/落库异常。别再叫"连接中断"误导排查。
@@ -1334,34 +1399,34 @@ export const useChatAI = ({
             const liveChar = charRef.current?.id === char.id ? charRef.current : null;
             if (liveChar?.memoryPalaceEnabled && mpEmb?.baseUrl && mpEmb?.apiKey && mpLLM.baseUrl) {
                 const charName = char.name;
-            // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
-            // 预置状态会让"沉思"指示器一闪让用户误以为在干活。
-            // onProgress 在 pipeline 真正进入处理路径后（过完 hot_zone/threshold 检查）
-            // 才首次触发 setMemoryPalaceStatus，这样 skip 路径下指示器不会亮。
+                // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
+                // 预置状态会让"沉思"指示器一闪让用户误以为在干活。
+                // onProgress 在 pipeline 真正进入处理路径后（过完 hot_zone/threshold 检查）
+                // 才首次触发 setMemoryPalaceStatus，这样 skip 路径下指示器不会亮。
 
-            // 缓冲区处理（LLM提取 + Embedding向量化）
-            const recentMsgs = await DB.getRecentMessagesByCharId(char.id, 50);
-            processNewMessages(recentMsgs, char.id, charName, mpEmb, mpLLM, userProfile?.name || '', false, (stage) => {
-                    setMemoryPalaceStatus(stage);
-                })
-                .then(async (pipelineResult) => {
-                    // pipeline 跑的过程中用户可能又关掉了宫殿，跑完后所有"额外动作"
-                    // （autoArchive 写 char.memories / 50 轮认知消化的 LLM 调用）都要再 check 一次。
-                    const liveAfter = charRef.current?.id === char.id ? charRef.current : null;
-                    if (!liveAfter?.memoryPalaceEnabled) return;
+                // 缓冲区处理（LLM提取 + Embedding向量化）
+                const recentMsgs = await DB.getRecentMessagesByCharId(char.id, 50);
+                processNewMessages(recentMsgs, char.id, charName, mpEmb, mpLLM, userProfile?.name || '', false, (stage) => {
+                        setMemoryPalaceStatus(stage);
+                    })
+                    .then(async (pipelineResult) => {
+                        // pipeline 跑的过程中用户可能又关掉了宫殿，跑完后所有"额外动作"
+                        // （autoArchive 写 char.memories / 50 轮认知消化的 LLM 调用）都要再 check 一次。
+                        const liveAfter = charRef.current?.id === char.id ? charRef.current : null;
+                        if (!liveAfter?.memoryPalaceEnabled) return;
 
-                    // 显示结果让用户看到
-                    if (pipelineResult && pipelineResult.stored > 0) {
-                        setMemoryPalaceResult(pipelineResult);
-                    }
+                        // 显示结果让用户看到
+                        if (pipelineResult && pipelineResult.stored > 0) {
+                            setMemoryPalaceResult(pipelineResult);
+                        }
 
-                    // 自动归档：把 palace 提取出的记忆按日期合成 YAML bullets 追加到
-                    // char.memories，同时推 hideBeforeMessageId 自动隐藏已总结的聊天
-                    // 仅在 char.autoArchiveEnabled 显式开启时执行（默认 off，opt-in）
-                    if (updateCharacter && (liveAfter as any).autoArchiveEnabled) {
-                        try {
-                            const patch: any = {};
-                            if (pipelineResult?.autoArchive) {
+                        // 自动归档：把 palace 提取出的记忆按日期合成 YAML bullets 追加到
+                        // char.memories，同时推 hideBeforeMessageId 自动隐藏已总结的聊天
+                        // 仅在 char.autoArchiveEnabled 显式开启时执行（默认 off，opt-in）
+                        if (updateCharacter && (liveAfter as any).autoArchiveEnabled) {
+                            try {
+                                const patch: any = {};
+                                if (pipelineResult?.autoArchive) {
                                     patch.memories = mergePalaceFragmentsIntoMemories(
                                         char.memories || [],
                                         pipelineResult.autoArchive.fragments,
@@ -1391,7 +1456,12 @@ export const useChatAI = ({
                             console.log(`🧠 [AutoDigest] 已达 50 轮，自动触发认知消化...`);
                             setMemoryPalaceStatus(`${charName}闭上眼睛，开始整理内心…`);
                             const persona = [char.systemPrompt || '', char.worldview || ''].filter(Boolean).join('\n');
-                            const result = await runCognitiveDigestion(char.id, charName, persona, mpLLM, false, userProfile?.name, mpEmb);
+                            const result = await runCognitiveDigestion(
+                                char.id, charName, persona, mpLLM, false, userProfile?.name, mpEmb,
+                                // 消化链路可能含多次 LLM 调用（审视→历史回填续传→门牌整理），
+                                // 实时刷状态条让用户知道后台在干活、别急着关页面
+                                (stage) => setMemoryPalaceStatus(`${charName}${stage}`),
+                            );
                             if (result) {
                                 // 自我领悟不再追加到 char.selfInsights（只进不出的旧常驻层）——
                                 // 归宿已改为 self_room 门牌（digestion 内部提交），这里只负责弹窗昭告
