@@ -58,7 +58,7 @@ export default defineConfig({
     __BUILD_BADGE_VISIBLE__: JSON.stringify(showBuildBadge),
   },
   // GitHub Pages 发布时使用相对路径，避免仓库子路径导致资源 404
-  base: process.env.GITHUB_PAGES ? './' : '/',
+  base: './',
   esbuild: {
     // 只剥 debugger，保留 console.* —— 部署后按 F12 仍能看到运行时日志，方便排查。
     drop: ['debugger'],

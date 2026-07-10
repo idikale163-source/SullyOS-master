@@ -1010,20 +1010,6 @@ const Settings: React.FC = () => {
           setCustomMcpTesting(false);
       }
   };
-      try {
-          const r = await testLuckinConnection();
-          if (r.ok) {
-              const names = (r.tools || []).map(t => t.name).slice(0, 6).join(', ');
-              setLuckinTestStatus(`✅ ${r.message}${names ? `\n工具: ${names}${(r.tools || []).length > 6 ? ' ...' : ''}` : ''}`);
-          } else {
-              setLuckinTestStatus(`❌ ${r.message}`);
-          }
-      } catch (e: any) {
-          setLuckinTestStatus(`❌ ${e?.message || String(e)}`);
-      } finally {
-          setLuckinTesting(false);
-      }
-  };
 
   return (
     <div className="h-full w-full bg-slate-50/50 flex flex-col font-light relative">
