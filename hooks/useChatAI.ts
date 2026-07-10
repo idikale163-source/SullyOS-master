@@ -510,6 +510,8 @@ export const useChatAI = ({
                     thinkingChain: { enabled: !!(char as any).showThinkingChain, customPrompt: (char as any).thinkingChainCustomPrompt },
                     mcdMiniSnap: mcdMiniOpen ? mcdMiniSnap : undefined,
                     luckinMiniSnap: luckinMiniOpen ? luckinMiniSnap : undefined,
+                    luckinChat: deps.luckinChatRef?.current?.active ? deps.luckinChatRef.current : undefined,
+                    customMcpActive: deps.customMcpActive,
                 });
 
                 if (payload.flags.promptBuildSkipped) {
