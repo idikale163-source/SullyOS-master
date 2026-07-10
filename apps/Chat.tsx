@@ -17,6 +17,7 @@ import { isMcdConfigured } from '../utils/mcdMcpClient';
 import { isMcdActivatedInMessages, MCD_ACTIVATE_TRIGGER, MCD_DEACTIVATE_TRIGGER } from '../utils/mcdToolBridge';
 import { isLuckinConfigured } from '../utils/luckinMcpClient';
 import { isLuckinActivatedInMessages, LUCKIN_ACTIVATE_TRIGGER, LUCKIN_DEACTIVATE_TRIGGER } from '../utils/luckinToolBridge';
+import { isCustomMcpEnabled } from '../utils/customMcpClient';
 import MessageItem from '../components/chat/MessageItem';
 import McdMiniApp from '../components/mcd/McdMiniApp';
 import LuckinMiniApp from '../components/luckin/LuckinMiniApp';
@@ -213,6 +214,7 @@ const Chat: React.FC = () => {
         mcdMiniAppRef,
         luckinMiniAppRef,
         luckinChatRef,
+        customMcpActive: isCustomMcpEnabled(),
         updateCharacter,
     });
 
