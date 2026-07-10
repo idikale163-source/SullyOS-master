@@ -1172,7 +1172,7 @@ export const useChatAI = ({
                     
                     // 这里为了前端 UI 不假死，把这条 assistant call 消息存一次 DB 并渲染（可选，但推荐）
                     await DB.saveMessage({
-                        charId, role: 'assistant', type: 'text',
+                        charId: char.id, role: 'assistant', type: 'text',
                         content: data.choices[0].message.content || '(调用工具中)',
                         tool_calls: toolCalls
                     } as any);
