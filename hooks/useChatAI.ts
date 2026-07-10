@@ -1054,7 +1054,6 @@ export const useChatAI = ({
                         body: JSON.stringify(followBody)
                     });
                     updateTokenUsage(data, historyMsgCount, `mcd-propose-${it + 1}`);
-                    // 第二轮跳过 (我们已经禁用了 tools)
                     if (!data.choices?.[0]?.message?.tool_calls?.length) break;
                 }
             }
@@ -1220,13 +1219,30 @@ export const useChatAI = ({
                     updateTokenUsage(data, historyMsgCount, `custom-mcp-loop-${it + 1}`);
                 }
                 
-                if (!shouldBreak && data.choices?.[0]?.message?.content) {
-                    // 循环结束，把大模型最终的总结发出来
-                    const finalMsg = data.choices[0].message.content;
-                    const saved = await DB.saveMessage({
-                        charId, role: 'assistant', type: 'text', content: finalMsg
-                    } as any);
-                    return { success: true, apiMessage: saved, pass: 2 };
+                if (!shouldBreak) {
+                    if (data.choices?.[0]?.message?.content) {
+                        // 循环结束，把大模型最终的总结发出来
+                        const finalMsg = data.choices[0].message.content;
+                        const saved = await DB.saveMessage({
+                            charId: char.id, role: 'assistant', type: 'text', content: finalMsg
+                        } as any);
+                        return { success: true, apiMessage: saved, pass: 2 };
+                    } else {
+                        // 兜底：如果模型调完工具后没有返回 content，拿最后一条有效的 assistant text 作为兜底
+                        // 修复掉格式：需要将所有零碎的 text / tool_calls / tool_responses 聚合过滤，或者直接取最近有效字符
+                        const fallbackContent = loopMessages
+                            .filter(m => m.role === 'assistant' && typeof m.content === 'string' && m.content.trim() !== '' && m.content !== '(调用工具中)')
+                            .map(m => m.content)
+                            .join('\n\n') || loopMessages.filter(m => m.role === 'assistant' && m.content && m.content !== '(调用工具中)').pop()?.content;
+
+                        if (fallbackContent) {
+                             const saved = await DB.saveMessage({
+                                 charId: char.id, role: 'assistant', type: 'text', content: fallbackContent
+                             } as any);
+                             return { success: true, apiMessage: saved, pass: 2 };
+                        }
+                        return { success: true, apiMessage: null, pass: 2 };
+                    }
                 }
             }
             // 3.6 瑞幸聊天点单: 角色直接调真实 8 工具 (queryShopList →
