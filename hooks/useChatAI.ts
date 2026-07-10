@@ -1098,6 +1098,8 @@ export const useChatAI = ({
                             } as any);
                         }
                     }
+
+                    // 让 char 继续生成文字补充 (不再带 tools, 避免无限调)
                     const followBody = { ...baseReqBody, messages: loopMessages };
                     delete followBody.tools;
                     delete followBody.tool_choice;
@@ -1110,13 +1112,14 @@ export const useChatAI = ({
                 }
             }
 
-            // 3.6 自定义 MCP 工具调用循环: 允许角色接入用户指定的任意外部 MCP 接口
+// 3.6 自定义 MCP 工具调用循环: 允许角色接入用户指定的任意外部 MCP 接口
             if (payload.flags.customMcpActive && data.choices?.[0]?.message?.tool_calls?.length) {
                 const MAX_LOOPS = 6;
                 let loopMessages = [...fullMessages];
+
                 for (let it = 0; it < MAX_LOOPS; it++) {
-                    const toolCalls = data.choices?.[0]?.message?.tool_calls;
-                    if (!toolCalls || !toolCalls.length) break;
+                    const toolCalls = data.choices[0].message.tool_calls;
+                    if (!toolCalls || toolCalls.length === 0) break;
 
                     loopMessages.push(data.choices[0].message);
 
@@ -1132,37 +1135,33 @@ export const useChatAI = ({
                             if (result.success) {
                                 contentStr = typeof result.data === 'string' ? result.data : JSON.stringify(result.data);
                             } else {
-                                contentStr = result.error || '执行失败';
+                                contentStr = result.error || 'Unknown error';
                                 hasToolError = true;
                             }
-                            toolResults.push({
-                                tool_call_id: call.id,
-                                role: 'tool',
-                                content: contentStr
-                            });
+                            toolResults.push({ tool_call_id: call.id, role: 'tool', content: contentStr });
                         } catch (e: any) {
-                            toolResults.push({ tool_call_id: call.id, role: 'tool', content: `Error: ${e.message}` });
+                            toolResults.push({ tool_call_id: call.id, role: 'tool', content: `Tool call failed: ${e?.message || String(e)}` });
                             hasToolError = true;
                         }
                     }
 
-                    loopMessages.push(...toolResults);
-                    
-                    const m = baseReqBody.model || '';
-                    if (hasToolError && /^gemini/i.test(m) && baseReqBody.tools?.length) {
-                        console.log(`🍔 [Custom-MCP] 工具报错, Gemini 不允许出错后继续发 tool_call, 剥离 tools 重试...`);
-                        delete baseReqBody.tools;
-                        delete baseReqBody.tool_choice;
-                    }
+                    loopMessages.push(...toolResults as any);
 
-                    baseReqBody.messages = loopMessages;
-                    const nextResp = await safeFetchJson<any>(baseUrl + '/chat/completions', {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify(baseReqBody),
+                    const followBody = { ...baseReqBody, messages: loopMessages };
+                    const m = baseReqBody.model || '';
+                    if (hasToolError && /^gemini/i.test(m) && followBody.tools?.length) {
+                        console.log(`🍔 [Custom-MCP] 工具报错, Gemini 不允许出错后继续发 tool_call, 剥离 tools 重试...`);
+                        delete followBody.tools;
+                        delete followBody.tool_choice;
+                    }
+                    
+                    data = await safeFetchJson(`${baseUrl}/chat/completions`, {
+                        method: 'POST', headers,
+                        body: JSON.stringify(followBody)
                     });
-                    if (nextResp.error) throw new Error(nextResp.error);
-                    data = nextResp.data;
+                    updateTokenUsage(data, historyMsgCount, `customMcp-propose-${it + 1}`);
+
+                    if (!data.choices?.[0]?.message?.tool_calls?.length) break;
                 }
             }
 
@@ -1300,7 +1299,6 @@ export const useChatAI = ({
                 skipSecondPassLLM: false,
                 directives: [],
             });
-
         } catch (e: any) {
             // 注意: 这个 catch 兜的是「拿到 API 响应之后」的整条后处理管线 (applyAssistantPostProcessing,
             // 13 步)。这里抛错多半不是网络问题, 而是解析/正则/落库异常。别再叫"连接中断"误导排查。
@@ -1336,34 +1334,34 @@ export const useChatAI = ({
             const liveChar = charRef.current?.id === char.id ? charRef.current : null;
             if (liveChar?.memoryPalaceEnabled && mpEmb?.baseUrl && mpEmb?.apiKey && mpLLM.baseUrl) {
                 const charName = char.name;
-                // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
-                // 预置状态会让"沉思"指示器一闪让用户误以为在干活。
-                // onProgress 在 pipeline 真正进入处理路径后（过完 hot_zone/threshold 检查）
-                // 才首次触发 setMemoryPalaceStatus，这样 skip 路径下指示器不会亮。
+            // 不再预置"正在回味"状态：pipeline 会在水位线未到时立刻 skip，
+            // 预置状态会让"沉思"指示器一闪让用户误以为在干活。
+            // onProgress 在 pipeline 真正进入处理路径后（过完 hot_zone/threshold 检查）
+            // 才首次触发 setMemoryPalaceStatus，这样 skip 路径下指示器不会亮。
 
-                // 缓冲区处理（LLM提取 + Embedding向量化）
-                const recentMsgs = await DB.getRecentMessagesByCharId(char.id, 50);
-                processNewMessages(recentMsgs, char.id, charName, mpEmb, mpLLM, userProfile?.name || '', false, (stage) => {
-                        setMemoryPalaceStatus(stage);
-                    })
-                    .then(async (pipelineResult) => {
-                        // pipeline 跑的过程中用户可能又关掉了宫殿，跑完后所有"额外动作"
-                        // （autoArchive 写 char.memories / 50 轮认知消化的 LLM 调用）都要再 check 一次。
-                        const liveAfter = charRef.current?.id === char.id ? charRef.current : null;
-                        if (!liveAfter?.memoryPalaceEnabled) return;
+            // 缓冲区处理（LLM提取 + Embedding向量化）
+            const recentMsgs = await DB.getRecentMessagesByCharId(char.id, 50);
+            processNewMessages(recentMsgs, char.id, charName, mpEmb, mpLLM, userProfile?.name || '', false, (stage) => {
+                    setMemoryPalaceStatus(stage);
+                })
+                .then(async (pipelineResult) => {
+                    // pipeline 跑的过程中用户可能又关掉了宫殿，跑完后所有"额外动作"
+                    // （autoArchive 写 char.memories / 50 轮认知消化的 LLM 调用）都要再 check 一次。
+                    const liveAfter = charRef.current?.id === char.id ? charRef.current : null;
+                    if (!liveAfter?.memoryPalaceEnabled) return;
 
-                        // 显示结果让用户看到
-                        if (pipelineResult && pipelineResult.stored > 0) {
-                            setMemoryPalaceResult(pipelineResult);
-                        }
+                    // 显示结果让用户看到
+                    if (pipelineResult && pipelineResult.stored > 0) {
+                        setMemoryPalaceResult(pipelineResult);
+                    }
 
-                        // 自动归档：把 palace 提取出的记忆按日期合成 YAML bullets 追加到
-                        // char.memories，同时推 hideBeforeMessageId 自动隐藏已总结的聊天
-                        // 仅在 char.autoArchiveEnabled 显式开启时执行（默认 off，opt-in）
-                        if (updateCharacter && (liveAfter as any).autoArchiveEnabled) {
-                            try {
-                                const patch: any = {};
-                                if (pipelineResult?.autoArchive) {
+                    // 自动归档：把 palace 提取出的记忆按日期合成 YAML bullets 追加到
+                    // char.memories，同时推 hideBeforeMessageId 自动隐藏已总结的聊天
+                    // 仅在 char.autoArchiveEnabled 显式开启时执行（默认 off，opt-in）
+                    if (updateCharacter && (liveAfter as any).autoArchiveEnabled) {
+                        try {
+                            const patch: any = {};
+                            if (pipelineResult?.autoArchive) {
                                     patch.memories = mergePalaceFragmentsIntoMemories(
                                         char.memories || [],
                                         pipelineResult.autoArchive.fragments,
