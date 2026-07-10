@@ -184,8 +184,8 @@ const post = async (
           body: JSON.stringify(body),
       });
     } catch (e: any) {
-        if (e.name === 'TypeError' && e.message.includes('Failed to fetch')) {
-             throw new Error(`网络错误: 可能是跨域 (CORS) 拦截或地址无法访问。请确保目标 MCP 服务已开启 CORS 或你使用的是正确的本地地址，或配置 Worker 代理。\n原地址: ${url}`);
+        if (e.name === 'TypeError' && (e.message.includes('Failed to fetch') || e.message.includes('NetworkError') || e.message.includes('fetch'))) {
+             throw new Error(`网络错误: 可能是跨域 (CORS) 拦截或 HTTP(S) 混用导致。由于你正在 HTTPS 环境（如 GitHub Pages）访问 HTTP 服务，浏览器会强行拦截。解决方案：\n1. 用 HTTP 访问本应用\n2. 给目标 MCP 配置 HTTPS\n3. 通过 Worker 代理转发。\n原地址: ${url}`);
         }
         throw e;
     }
